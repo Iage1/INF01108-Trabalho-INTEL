@@ -1,8 +1,9 @@
 #Código para não enviar arquivos gerados automaticamente pelo masm para o repositório. 
-#Repositório vai conter apenas o código fonte.
 
 *.obj
 *.exe
 *.lst
 *.crf
 *.map
+*.txt
+*.sbr
