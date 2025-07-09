@@ -7,11 +7,13 @@
     CR equ 13   ; \r
     LF equ 10   ; \n
 
+    quebraLinha db CR, LF   ; Pra uso na escrita de arquivos
     const_dois dw 2 ; Constante dois pra uso em mul
 
     msgErroAbrir db "Erro ao abrir arquivo",'$'  ; Mensagens (usando a int21/AH=09h)
     msgErroLer db "Erro ao ler arquivo",'$'
     msgErroCol db "Erro nas colunas do arquivo",'$'
+    msgErroEscrita db "Erro na escrita do arquivo",'$'
 
     arqDados db "DADOS.TXT",0   ; Variáveis para os arquivos
     handleArq dw ?
@@ -27,8 +29,9 @@
     sw_m dw 0
 
     flagNeg db 0   ; Flag para a função atoi
+    cont dw 0      ; Contador genérico
 
-    stringTeste db  4000 dup(?)    ; Variável usada em funções de teste
+    stringTeste db  30 dup(?)    ; Variável usada em funções de teste
 
     numCol dw ? ; Número total de linhas e colunas da matriz 
     numLin dw ?
@@ -47,10 +50,6 @@
     call printf_numTeste
 
     call matrix_write
-    lea bx, bufferWrite
-    call printf_s
-
-    
 
     .exit  
 
@@ -289,7 +288,7 @@ matrix_write proc near
             inc si
             mov [si], LF
             inc si
-            
+
             inc linIndex
             jmp loop_lin_mw
 
@@ -297,12 +296,78 @@ matrix_write proc near
     mov [si], 0   ; Adiciona o caractere terminador ao fim do buffer
 
     ; A partir daqui a função deve localizar de onde a escrita no arquivo parou, escrever o buffer (matriz) logo após, e colocar o terminador (para futuras escritas)
+    ; Enquanto o arquivo não for fechado, a posição do cabeçote é salva pelo 
     escrita_result_mw:
     
+    lea dx, arqResult    ; Abre o arquivo
+    mov al, 2            ; al = 2 para leitura e escrita
+    mov ah, 3dh
+    int 21h             ; cf == 0 se ok
+    jc erro_abrir_mw
+    mov handleArq, ax
+
+    mov ah, 42h         ; int parecida com um "fseek"
+    mov al, 2           ; Aqui posiciona o cabeçote pro final do arquivo
+    mov bx, handleArq
+    mov cx, 0
+    mov dx, 0
+    int 21h
+    
+    ; Quebra a linha pra escrever na parte de baixo
+    mov ah, 40h         ; int de escrita
+    mov bx, handleArq   
+    mov cx, 2          ; Número de bytes a serem escritos
+    lea dx, quebraLinha
+    int 21h
+    jc erro_escrita_mw
+    
+    lea di, bufferWrite
+    mov cont, 0
+    loop_tam_buffer_mw:     ; Calcula o tamanho do buffer pra passar por parâmetro em cx na proxima escrita
+        
+        cmp byte ptr [di], 0
+        je fim_loop_tam_buffer_mw
+
+        inc cont
+        inc di
+        jmp loop_tam_buffer_mw
+    
+    fim_loop_tam_buffer_mw:
+
+    mov ah, 40h         ; Escreve o buffer no arquivo de resultados
+    mov bx, handleArq
+    mov cx, cont
+    lea dx, bufferWrite
+    int 21h
+    jc erro_escrita_mw
+
+    mov ah, 3eh         ; Fecha o arquivo
+    mov bx, handleArq
+    int 21h
+    
+    jmp fim_mw
     
     
+    erro_abrir_mw:
+        lea dx, msgErroAbrir    ; Int 21/AH=09h para mostrar a mensagem
+        mov ah, 09h
+        int 21h
+
+        mov al, 0       ; Int 21/AH=4Ch para encerrar o programa
+        mov ah, 4ch   
+        int 21h
+
+    erro_escrita_mw:
+        lea dx, msgErroEscrita
+        mov ah, 09h
+        int 21h
+
+        mov al, 0
+        mov ah, 4ch
+        int 21h
     
-    ret
+    fim_mw:
+        ret
 
 matrix_write endp
 
