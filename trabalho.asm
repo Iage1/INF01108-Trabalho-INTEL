@@ -15,8 +15,10 @@
 
     arqDados db "DADOS.TXT",0   ; Variáveis para os arquivos
     handleArq dw ?
-    bufferArq db 2000 dup(']') ; Buffer para armazenar todo o arquivo (caractere ']' para apontar fim do arquivo)     
-    bufferMenor db 10 dup(?)   ; Buffer menor para armazenar e converter cada numero de DADOS.TXT
+    bufferArq db 4000 dup(?) ; Buffer para armazenar todo o arquivo  
+    bufferWrite db 4000 dup(?) ; Buffer para armazenar a matriz de dados convertida e escrever no arquivo
+    bufferMenor db 30 dup(?)   ; Buffer menor para armazenar e converter cada numero de DADOS.TXT
+    bytesLidos dw ?            ; Variável para armazenar numero de bytes lidos após int de leitura do arquivo
     arqExp db "EXP.TXT",0
     arqResult db "RESULT.TXT",0
 
@@ -26,29 +28,36 @@
 
     flagNeg db 0   ; Flag para a função atoi
 
-    stringTeste db 30 dup(?)    ; Variável usada em funções de teste
+    stringTeste db  4000 dup(?)    ; Variável usada em funções de teste
 
-    numCol dw ? ; Número de linhas e colunas da matriz 
+    numCol dw ? ; Número total de linhas e colunas da matriz 
     numLin dw ?
-    linIndex dw ?
+    linIndex dw ?   ; Índices de linhas e colunas 
     colIndex dw ?
-    matriz dw 1000 dup(?)   ; Reserva 1000 espaços pra matriz que contem os dados
+    matriz dw 2000 dup(?)   ; Reserva 2000 espaços pra matriz que contem os dados
+    matrizExp dw 2000 dup(?)      ; Reserva 2000 espaços pra matriz das expressões
 
 .code 
     .startup ; main
     
     call cmatrix
     
-    mov si, 18
+    mov si, 10
     mov ax, matriz[si]  
     call printf_numTeste
+
+    call matrix_write
+    lea bx, bufferWrite
+    call printf_s
+
+    
 
     .exit  
 
 ; SUBROTINAS DO PROGRAMA
 
 cmatrix proc near
-    ; Cria uma matriz com base no arquivo de dados
+    ; Cria uma matriz no programa com base no arquivo de dados
     
     lea dx, arqDados    ; Abre o arquivo
     mov al, 0
@@ -63,10 +72,15 @@ cmatrix proc near
     mov cx, 2000
     int 21h             ; cf == 0 se ok, ax tem bytes lidos
     jc erro_ler
+    mov bytesLidos, ax
 
     mov ah, 3eh         ; Fecha o arquivo
     mov bx, handleArq
     int 21h
+
+	lea bx, bufferArq  ; adiciona o $ no final do buffer de arquivo para encontrar o fim
+	mov si, bytesLidos
+	mov byte ptr [bx+si], '$'
 
     lea si, bufferArq   ; Faz si percorrer o buffer até achar o CR (fim da linha)
     loop_numCol:
@@ -104,9 +118,9 @@ cmatrix proc near
     mov linIndex, 0         
 
     loop_lin:               ; Esse loop executa a cada linha da matriz
-        cmp byte ptr [si], ']'  ; Se o byte apontado por si é ']', acabou a matriz
+        cmp byte ptr [si], '$'  ; Se o byte apontado por si é ']', acabou a matriz
         je fim_cmatrix
-    
+
         mov colIndex, 0     ; Resseta colIndex para a leitura de uma nova linha
 
         loop_col:  ; Loop executado para cada elemento (coluna) da matriz        
@@ -153,7 +167,7 @@ cmatrix proc near
             je prox_lin            ; Do contrário, vai pra proxima coluna
             cmp byte ptr [si], LF
             je prox_lin
-            cmp byte ptr [si], ']'
+            cmp byte ptr [si], '$'
 
             inc si      
             jmp loop_col
@@ -209,9 +223,93 @@ cmatrix proc near
     fim_cmatrix:
         mov ax, linIndex
         mov numLin, ax
-        add numLin, 1
         ret
 cmatrix endp
+
+cmatrix_exp proc near
+    ; Cria uma matriz no programa com base no arquivo de expressões
+
+    ret
+
+cmatrix_exp endp
+
+matrix_write proc near
+    ; Escreve a matriz de dados atual no arquivo de resultado:
+    ; Transforma a matriz em string e passa para um buffer, abre result.txt, acha o terminador no arquivo e escreve a matriz em baixo
+
+    mov colIndex, 0
+    mov linIndex, 0
+    lea si, bufferWrite     ; si vai percorrer o buffer grande
+
+    loop_lin_mw:
+        mov cx, linIndex    ; Se o indice atual da linha for (igual / maior, tem que ver) que o total de linhas, vai pro final
+        cmp cx, numLin
+        je escrita_result_mw
+
+        mov colIndex, 0     ; Zera o indice das colunas ao entrar na nova linha
+        
+        loop_col_mw:     ; Vai pegar o número da matriz, converter em string, escrever no buffer, colocar ';' ou cr lf
+            mov cx, colIndex    ; Se o indice atual da coluna for o maximo, vai pra proxima linha
+            cmp cx, numCol
+            je prox_lin_mw
+
+            ;Calculo do endereço é: matriz[(linIndex * numCol + colIndex) * 2]
+            mov ax, linIndex
+            mul numCol
+            add ax, colIndex
+            mul const_dois
+            mov di, ax
+
+            mov ax, matriz[di]  ; Converte o elemento em string e escreve em bufferMenor
+            lea bx, bufferMenor
+            call sprintf_w
+            
+            lea di, bufferMenor
+
+            loop_escreve_mw:    ; Escreve a string de bufferMenor em bufferWrite
+                mov al, byte ptr [di]
+
+                cmp al, 0               ; Enquanto não chega no fim da string, escreve o byte do buffer menor no buffer grande
+                je fim_loop_escreve_mw
+
+                mov [si], al 
+                inc si
+                inc di
+                jmp loop_escreve_mw
+            
+            fim_loop_escreve_mw:
+                mov [si], ';'
+                inc si
+                inc colIndex
+                jmp loop_col_mw
+        
+        prox_lin_mw:   ; Escreve um cr lf no buffer, e inc pra proxima linha
+            dec si
+            mov [si], CR
+            inc si
+            mov [si], LF
+            inc si
+            
+            inc linIndex
+            jmp loop_lin_mw
+
+    inc si
+    mov [si], 0   ; Adiciona o caractere terminador ao fim do buffer
+
+    ; A partir daqui a função deve localizar de onde a escrita no arquivo parou, escrever o buffer (matriz) logo após, e colocar o terminador (para futuras escritas)
+    escrita_result_mw:
+    
+    
+    
+    
+    ret
+
+matrix_write endp
+
+linha_exp_write proc near
+
+ret
+linha_exp_write endp 
 
 atoi proc near
     ; Converte string em número 
@@ -333,7 +431,8 @@ printf_s proc near
 	jmp		printf_s			;Volta para o começo da função
 		
 ps_1:
-	ret
+	
+    ret
 	
 printf_s	endp
 
