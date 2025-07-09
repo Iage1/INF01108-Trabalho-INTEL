@@ -7,13 +7,16 @@
     CR equ 13   ; \r
     LF equ 10   ; \n
 
-    msgErroAbrir db "Erro ao abrir",'$'  ; Mensagens (usando a int21/AH=09h)
-    msgErroLer db "Erro ao ler",'$'
-    msgErroCol db "Erro nas colunas",'$'
+    const_dois dw 2 ; Constante dois pra uso em mul
+
+    msgErroAbrir db "Erro ao abrir arquivo",'$'  ; Mensagens (usando a int21/AH=09h)
+    msgErroLer db "Erro ao ler arquivo",'$'
+    msgErroCol db "Erro nas colunas do arquivo",'$'
 
     arqDados db "DADOS.TXT",0   ; Variáveis para os arquivos
     handleArq dw ?
-    bufferArq db 10 dup(?)
+    bufferArq db 2000 dup(']') ; Buffer para armazenar todo o arquivo (caractere ']' para apontar fim do arquivo)     
+    bufferMenor db 10 dup(?)   ; Buffer menor para armazenar e converter cada numero de DADOS.TXT
     arqExp db "EXP.TXT",0
     arqResult db "RESULT.TXT",0
 
@@ -21,15 +24,24 @@
     sw_f db 0
     sw_m dw 0
 
+    flagNeg db 0   ; Flag para a função atoi
+
+    stringTeste db 30 dup(?)    ; Variável usada em funções de teste
+
     numCol dw ? ; Número de linhas e colunas da matriz 
     numLin dw ?
-
+    linIndex dw ?
+    colIndex dw ?
+    matriz dw 1000 dup(?)   ; Reserva 1000 espaços pra matriz que contem os dados
 
 .code 
     .startup ; main
     
     call cmatrix
-
+    
+    mov si, 18
+    mov ax, matriz[si]  
+    call printf_numTeste
 
     .exit  
 
@@ -48,15 +60,19 @@ cmatrix proc near
     mov bx, handleArq   ; Lê o arquivo
     lea dx, bufferArq
     mov ah, 3fh
-    mov cx, 10
+    mov cx, 2000
     int 21h             ; cf == 0 se ok, ax tem bytes lidos
     jc erro_ler
+
+    mov ah, 3eh         ; Fecha o arquivo
+    mov bx, handleArq
+    int 21h
 
     lea si, bufferArq   ; Faz si percorrer o buffer até achar o CR (fim da linha)
     loop_numCol:
         cmp byte ptr [si], CR   ; Compara o byte apontado por si com o CR
-        je fim_loop_numCol
-        cmp byte ptr [si], LF   ; Compara o byte apontado por si com o LF
+        je fim_loop_numCol      ; Se for igual, achou o fim da linha (sai do loop)
+        cmp byte ptr [si], LF   
         je fim_loop_numCol
         inc si
         jmp loop_numCol
@@ -75,8 +91,92 @@ cmatrix proc near
     jg erro_numCol
 
     mov numCol, ax      ; Se não deu erro, atribui atribui o número a variável
+    
+    arruma_si:
+        inc si                  ; Arruma o si para passar apontar pro primeiro byte da segunda linha
+        cmp byte ptr [si], CR   ; Enquanto apontar para um cr ou lf (que sobrou da linha anterior) incrementa
+        je arruma_si
+        cmp byte ptr [si], LF
+        je arruma_si
 
-    jmp fim_cmatrix
+    ; A partir daqui, a função passa a coletar os dados do arquivo e armazena na matriz do programa
+    mov numLin, 0  
+    mov linIndex, 0         
+
+    loop_lin:               ; Esse loop executa a cada linha da matriz
+        cmp byte ptr [si], ']'  ; Se o byte apontado por si é ']', acabou a matriz
+        je fim_cmatrix
+    
+        mov colIndex, 0     ; Resseta colIndex para a leitura de uma nova linha
+
+        loop_col:  ; Loop executado para cada elemento (coluna) da matriz        
+            lea di, bufferMenor     ; di para percorrer o buffer usado para os numeros
+           
+           escreve_buffer:              ; Loop pra escrita do numero no buffer
+                mov al, byte ptr [si]   ; Necessário usar registradores (não tem transferência de memória para memória)
+
+                cmp byte ptr [si], ';'  ; Vê se chegou no fim do número ou da linha. Do contrário, adiciona o byte pro buffer
+                je fim_escreve_buffer
+                cmp byte ptr [si], CR
+                je fim_escreve_buffer
+                cmp byte ptr [si], LF
+                je fim_escreve_buffer
+
+                mov [di], al            ; Conteudo do apontado por si pro endereço apontado por di (bufferMenor)
+                inc si                  ; si vai pro próximo byte do arquivo
+                inc di                  ; di pro proximo byte do buffer
+                jmp escreve_buffer
+            
+            fim_escreve_buffer:         ; Move o terminador de string pro endereço apontado por di (que vai ser um cr ou lf) 
+                mov byte ptr [di], 0    ; pra poder usar atoi no numero que o buffer pegou
+
+            lea bx, bufferMenor
+            call atoi                   ; Aqui ax sai com o numero convertido
+
+            ; Com o número em ax, essa parte do código calcula o endereço e guarda na matriz
+            mov cx, ax                  ; Passa o número para cx, pra poder usar mul
+
+            ;Calculo do endereço é: endereço_base_matrix + (linIndex * numCol + colIndex) * 2
+            mov ax, linIndex      
+            mul numCol
+            add ax, colIndex
+            mul const_dois
+            lea di, matriz      ; di armazena o endereço base da matriz
+            add di, ax          ; di agora contém o endereço do elemento
+
+            mov [di], cx        ; Armazena o numero no endereco correspondente na matriz
+
+            ; Vai pra proxima coluna, ou pra proxima linha se tiver achado o cr ou lf
+            inc colIndex 
+
+            cmp byte ptr [si], CR  ; Se o byte apontado por si no buffer do arquivo for não ';', vai pra proxima linha
+            je prox_lin            ; Do contrário, vai pra proxima coluna
+            cmp byte ptr [si], LF
+            je prox_lin
+            cmp byte ptr [si], ']'
+
+            inc si      
+            jmp loop_col
+
+            prox_lin:
+                mov cx, colIndex    ; Primeiro checa se o número de colunas da linha bateu com o numCol fornecido, pra apontar possivel erro
+                cmp cx, numCol
+                jne erro_numCol
+
+                loop_prox_lin:              ; Enquanto o conteúdo de si não for o primeiro digito da prox linha, inc si
+                    cmp byte ptr [si], CR
+                    je loop_prox_lin_inc
+                    cmp byte ptr [si], LF
+                    je loop_prox_lin_inc
+                    jmp fim_prox_lin
+
+                    loop_prox_lin_inc:
+                        inc si
+                        jmp loop_prox_lin
+                
+                fim_prox_lin:
+                    inc linIndex
+                    jmp loop_lin
 
     erro_abrir:
         lea dx, msgErroAbrir    ; Int 21/AH=09h para mostrar a mensagem
@@ -84,7 +184,7 @@ cmatrix proc near
         int 21h
 
         mov al, 0       ; Int 21/AH=4Ch para encerrar o programa
-        mov ah, 4Ch   
+        mov ah, 4ch   
         int 21h
 
 
@@ -94,7 +194,7 @@ cmatrix proc near
         int 21h
 
         mov al, 0      
-        mov ah, 4Ch   
+        mov ah, 4ch   
         int 21h
 
     erro_numCol:
@@ -103,10 +203,13 @@ cmatrix proc near
         int 21h
 
         mov al, 0      
-        mov ah, 4Ch   
+        mov ah, 4ch   
         int 21h
 
     fim_cmatrix:
+        mov ax, linIndex
+        mov numLin, ax
+        add numLin, 1
         ret
 cmatrix endp
 
@@ -117,8 +220,13 @@ atoi proc near
     ; Modifica ax e bx
 	mov		ax,0 	;AX = 0		
 		
+    cmp     byte ptr[bx], '-'   ; Verifica se o numero é negativo
+    jne     atoi_2
+    mov     flagNeg, 1
+    inc     bx
+
 atoi_2:
-	
+
     cmp		byte ptr[bx], 0	;[bx] corresponde ao acesso ao endereço apontado por bx, já a diretiva byte ptr indica que devemos acessar um byte do endereço apontado por bx
 	jz		atoi_1			;se achou o terminador nulo, sai da função
 
@@ -136,7 +244,13 @@ atoi_2:
 	jmp		atoi_2
 
 atoi_1:
-	
+	cmp flagNeg, 0
+    je return_atoi
+
+    neg ax
+
+return_atoi:
+    mov flagNeg, 0
     ret
 
 atoi	endp
@@ -222,6 +336,21 @@ ps_1:
 	ret
 	
 printf_s	endp
+
+; SUBROTINAS DE TESTE
+printf_numTeste proc near
+    ; Função printa um numero 
+    ; Passar o numero a ser printado em ax antes de chamar
+    ; Modifica ax e bx
+       
+    lea bx, stringTeste
+    call  sprintf_w
+
+    lea bx, stringTeste
+    call printf_s
+
+    ret
+printf_numTeste endp
 
 
 end 
