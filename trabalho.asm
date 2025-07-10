@@ -17,20 +17,24 @@
     msgErroOperacao db "Operacao invalida em EXP.TXT",'$'
 
     arqDados db "DADOS.TXT",0   ; Variáveis para os arquivos
+    arqExp db "EXP.TXT",0
+    arqResult db "RESULT.TXT",0
+    
     handleArq dw ?
     bufferArq db 4000 dup(?) ; Buffer para armazenar todo o arquivo  
     bufferWrite db 4000 dup(?) ; Buffer para armazenar a matriz de dados convertida e escrever no arquivo
+    bufferLinha db 100 dup (?) ; Buffer para armazenar um linha do arquivo de expressões e escrever no arquivo resultado
     bufferMenor db 30 dup(?)   ; Buffer menor para armazenar e converter cada numero de DADOS.TXT
     bytesLidos dw ?            ; Variável para armazenar numero de bytes lidos após int de leitura do arquivo
-    arqExp db "EXP.TXT",0
-    arqResult db "RESULT.TXT",0
+
 
     sw_n dw 0   ; Variáveis da função sprintf_w
     sw_f db 0
     sw_m dw 0
 
-    flagNeg db 0   ; Flag para a função atoi
-    cont dw 0      ; Contador genérico
+    flagNeg db 0    ; Flag para a função atoi
+    cont dw 0       ; Contador genérico
+    numLinLew dw 1  ; Variável parâmetro para linha_exp_write
 
     stringTeste db  30 dup(?)    ; Variável usada em funções de teste
 
@@ -38,8 +42,7 @@
     numLin dw ?
     linIndex dw ?   ; Índices de linhas e colunas 
     colIndex dw ?
-    linIndexExp dw ?
-    colIndexExp dw ?
+
     matriz dw 2000 dup(?)   ; Reserva 2000 espaços pra matriz que contem os dados
     matrizExp dw 2000 dup(?)      ; Reserva 2000 espaços pra matriz das expressões
 
@@ -48,6 +51,8 @@
     
     call cmatrix
     call cmatrix_exp
+    
+    call matrix_write
     
     ;mov si, 10
     ;mov ax, matriz[si]  
@@ -425,6 +430,7 @@ cmatrix_exp proc near
             jmp loop_lin_cme
 
     fim_cmatrix_exp:
+        mov matrizExp[bx], '$'  ; Coloca um terminador no fim da matriz de expressões
         ret
 
 cmatrix_exp endp
@@ -569,9 +575,128 @@ matrix_write proc near
 matrix_write endp
 
 linha_exp_write proc near
+    ; Escreve uma linha do arquivo de expressões no arquivo de resultados
+    ; Passar a linha como parametro na funcao de calculo numLinLew
 
-ret
-linha_exp_write endp 
+    lea dx, arqExp    ; Abre o arquivo
+    mov al, 0
+    mov ah, 3dh
+    int 21h             ; cf == 0 se ok
+    jc erro_abrir
+    mov handleArq, ax
+
+    mov bx, handleArq   ; Lê o arquivo
+    lea dx, bufferArq
+    mov ah, 3fh
+    mov cx, 4000
+    int 21h             ; cf == 0 se ok, ax tem bytes lidos
+    jc erro_ler
+    mov bytesLidos, ax
+
+    mov ah, 3eh         ; Fecha o arquivo
+    mov bx, handleArq
+    int 21h
+
+	lea bx, bufferArq  ; adiciona o $ no final do buffer de arquivo para encontrar o fim
+	mov si, bytesLidos
+	mov byte ptr [bx+si], '$'
+
+    mov cont, 0
+    lea si, bufferArq
+
+    loop_lew:
+        mov ax, cont
+        cmp ax, numLinLew
+        je fim_loop_lew
+
+        lea di, bufferLinha
+
+        loop_escreve_lew:
+            cmp byte ptr [si], CR       ; Enquanto não achar o fim da linha, continua escrevendo no bufferLinha
+            je fim_loop_escreve_lew
+
+            mov al, byte ptr [si]
+            mov [di], al
+            inc si
+            inc di
+            jmp loop_escreve_lew
+
+        fim_loop_escreve_lew:
+            inc cont
+            mov byte ptr [di], CR  ; CRLF, Caracter terminador e incremento de si pra pra passar do cr lf
+            inc di
+            mov byte ptr [di], LF
+            inc di
+            mov byte ptr [di], '$'
+
+            inc si
+            inc si
+            jmp loop_lew
+
+    fim_loop_lew:       ; Escreve o último buffer linha na matriz result
+        
+        lea dx, arqResult    ; Abre o arquivo
+        mov al, 2            ; al = 2 para leitura e escrita
+        mov ah, 3dh
+        int 21h             ; cf == 0 se ok
+        jc erro_abrir_lew
+        mov handleArq, ax
+
+        mov ah, 42h         ; int parecida com um "fseek"
+        mov al, 2           ; Aqui posiciona o cabeçote pro final do arquivo
+        mov bx, handleArq
+        mov cx, 0
+        mov dx, 0
+        int 21h
+
+    lea di, bufferLinha
+    mov cont, 0
+    
+    loop_tam_buffer_lew:     ; Calcula o tamanho do buffer pra passar por parâmetro em cx na proxima escrita
+        
+        cmp byte ptr [di], '$'
+        je fim_loop_tam_buffer_lew
+
+        inc cont
+        inc di
+        jmp loop_tam_buffer_lew
+    
+    fim_loop_tam_buffer_lew:
+
+    mov ah, 40h         ; Escreve o buffer no arquivo de resultados
+    mov bx, handleArq
+    mov cx, cont
+    lea dx, bufferLinha
+    int 21h
+    jc erro_escrita_lew
+
+    mov ah, 3eh         ; Fecha o arquivo
+    mov bx, handleArq
+    int 21h
+    
+    jmp fim_linha_exp_write
+
+    erro_abrir_lew:
+        lea dx, msgErroAbrir    ; Int 21/AH=09h para mostrar a mensagem
+        mov ah, 09h
+        int 21h
+
+        mov al, 0       ; Int 21/AH=4Ch para encerrar o programa
+        mov ah, 4ch   
+        int 21h
+
+    erro_escrita_lew:
+        lea dx, msgErroEscrita
+        mov ah, 09h
+        int 21h
+
+        mov al, 0
+        mov ah, 4ch
+        int 21h
+
+    fim_linha_exp_write:
+        ret
+linha_exp_write endp
 
 atoi proc near
     ; Converte string em número 
