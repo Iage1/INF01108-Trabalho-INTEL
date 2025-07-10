@@ -14,6 +14,7 @@
     msgErroLer db "Erro ao ler arquivo",'$'
     msgErroCol db "Erro nas colunas do arquivo",'$'
     msgErroEscrita db "Erro na escrita do arquivo",'$'
+    msgErroOperacao db "Operacao invalida em EXP.TXT",'$'
 
     arqDados db "DADOS.TXT",0   ; Variáveis para os arquivos
     handleArq dw ?
@@ -37,6 +38,8 @@
     numLin dw ?
     linIndex dw ?   ; Índices de linhas e colunas 
     colIndex dw ?
+    linIndexExp dw ?
+    colIndexExp dw ?
     matriz dw 2000 dup(?)   ; Reserva 2000 espaços pra matriz que contem os dados
     matrizExp dw 2000 dup(?)      ; Reserva 2000 espaços pra matriz das expressões
 
@@ -44,12 +47,14 @@
     .startup ; main
     
     call cmatrix
+    call cmatrix_exp
     
-    mov si, 10
-    mov ax, matriz[si]  
-    call printf_numTeste
+    ;mov si, 10
+    ;mov ax, matriz[si]  
+    ;call printf_numTeste
 
-    call matrix_write
+    
+    
 
     .exit  
 
@@ -68,7 +73,7 @@ cmatrix proc near
     mov bx, handleArq   ; Lê o arquivo
     lea dx, bufferArq
     mov ah, 3fh
-    mov cx, 2000
+    mov cx, 4000
     int 21h             ; cf == 0 se ok, ax tem bytes lidos
     jc erro_ler
     mov bytesLidos, ax
@@ -117,7 +122,7 @@ cmatrix proc near
     mov linIndex, 0         
 
     loop_lin:               ; Esse loop executa a cada linha da matriz
-        cmp byte ptr [si], '$'  ; Se o byte apontado por si é ']', acabou a matriz
+        cmp byte ptr [si], '$'  ; Se o byte apontado por si é '$', acabou a matriz
         je fim_cmatrix
 
         mov colIndex, 0     ; Resseta colIndex para a leitura de uma nova linha
@@ -227,8 +232,200 @@ cmatrix endp
 
 cmatrix_exp proc near
     ; Cria uma matriz no programa com base no arquivo de expressões
+    ; [0 - flag de escrita no arquivo sim/nao (0/1) |2 - valor da linha da matriz que será alterada |4 - flag pra ver se valor 1 é ref/const (0/1) |6 - valor 1
+    ; |8 - operação |10 - flag pra ver se valor 2 é ref/const (0/1) |12 - valor 2]
+    ; NUMCOL DE EXP É 7 PARA CÁLCULOS FUTURAMENTE
+    lea dx, arqExp    ; Abre o arquivo
+    mov al, 0
+    mov ah, 3dh
+    int 21h             ; cf == 0 se ok
+    jc erro_abrir
+    mov handleArq, ax
 
-    ret
+    mov bx, handleArq   ; Lê o arquivo
+    lea dx, bufferArq
+    mov ah, 3fh
+    mov cx, 4000
+    int 21h             ; cf == 0 se ok, ax tem bytes lidos
+    jc erro_ler
+    mov bytesLidos, ax
+
+    mov ah, 3eh         ; Fecha o arquivo
+    mov bx, handleArq
+    int 21h
+
+    lea bx, bufferArq           ; Move caractere terminador para o final do buffer
+    mov si, bytesLidos
+    mov byte ptr [bx+si], 0
+
+    lea si, bufferArq   ; si vai percorrer o buffer
+    mov bx, 0           ; bx vai atuar no modo indexado na matriz
+
+    loop_lin_cme:   ; Pra cada linha do arquivo, repete o processo
+    
+        cmp byte ptr [si], 0    ; Compara com o terminador colocado após o fechamento do arquivo
+        je fim_cmatrix_exp
+
+        word0_exp:
+            mov matrizExp[bx], 0
+            cmp byte ptr [si], '*'  ; Primeiro vê a flag que indica se o arquivo será escrito ou não
+            jne word1_exp
+
+            mov matrizExp[bx], 1       ; Acende flag de escrita
+            inc si                  ; Vai pro primeiro caractere de fato
+            jmp word1_exp
+
+        word1_exp:
+            inc si  ; si vai pro numero e bx vai pra proxima palavra da matriz (começo do número)
+            inc bx
+            inc bx
+            
+            lea di, bufferMenor ; bufferMenor pra receber e converter o numero em int
+
+            loop_word1_exp:             ; Armazena os algarismos do numero um a um, até encontrar o final (']')
+                cmp byte ptr [si], ']'  
+                je fim_loop_word1_exp
+                
+                mov al, byte ptr [si]   
+                mov [di], al
+                inc di
+                inc si
+                jmp loop_word1_exp
+
+            fim_loop_word1_exp:
+                mov byte ptr [di], 0    ; Caractere terminador no final da string
+                
+            push bx                     ; Guarda o bx na pilha pra não perder o valor, já que atoi precisa que a string a ser convertida seja passada por bx
+            lea bx, bufferMenor
+            call atoi          
+            pop bx
+            
+            mov matrizExp[bx], ax   ; ax sai da função atoi com o número convertido
+        
+        word2_exp:
+            inc si      ; si passa por '=' e agora aponta pra um possivel '[' / numero
+            inc si
+            inc bx      ; bx pro byte 4 da linha
+            inc bx
+            
+            mov matrizExp[bx], 0    ; Começa assumindo que é referencia
+
+            cmp byte ptr [si], '['  ; Se realmente for, vai pra prox word. Do contrário, acende a flag de que é uma const
+            je word3_exp
+
+            mov matrizExp[bx], 1
+            dec si                  ; Ajusta o ponteiro, pra estar no mesmo lugar pra word3_exp, mesmo se tivesse o colchete
+
+        word3_exp:
+            inc si                  ; Deve estar apontando pro primeiro digito do numero
+            inc bx                  ; bx pro byte 6 
+            inc bx
+            lea di, bufferMenor     ; Resseta a posição de di pra percorrer bufferMenor do início novamente
+
+            cmp byte ptr [si], '-'  ; Tratamento para numeros negativos necessário pra verificação seguinte não falhar
+            jne loop_word3_exp
+
+            mov byte ptr [di], '-'
+            inc di
+            inc si                  ; Agora sim, se era neg, vai estar apontando pro primeiro digito
+
+            loop_word3_exp:             ; Armazena os algarismos do numero um a um, até não encontrar um numero (pode ser uma expressao ou o colchete)
+                cmp byte ptr [si], '0'  
+                jl fim_loop_word3_exp
+                cmp byte ptr [si], '9'
+                jg fim_loop_word3_exp
+                
+                mov al, byte ptr [si]   
+                mov [di], al
+                inc di
+                inc si
+                jmp loop_word3_exp
+
+            fim_loop_word3_exp:
+                mov byte ptr [di], 0    ; Caractere terminador no final da string
+                
+            push bx                     ; Guarda o bx na pilha pra não perder o valor, já que atoi precisa que a string a ser convertida seja passada por bx
+            lea bx, bufferMenor
+            call atoi            
+            pop bx
+
+            mov matrizExp[bx], ax   ; ax sai da função atoi com o número convertido
+
+
+            cmp matrizExp[bx-2], 0  ; Tratamento pra si apontar pro mesmo lugar em word4_exp, mesmo que não haja colchete. Se tiver colchete, da certo sem alteracao
+            je word4_exp            ; Se há colchete, pode continuar. Do contrário, decrementa 1 (já que em word4_exp vai ser incrementado 1, considerando o colchete]
+            dec si
+
+        word4_exp:
+            inc si  ; Aqui deve estar apontando pra operação
+            inc bx  ; bx pro byte 8
+            inc bx
+            
+            mov ax, [si]        ; Simplesmente guarda a operação
+            mov matriz[bx], ax
+
+        word5_exp:
+            inc si  ; Deve estar apontando ou pra '[' ou pra um numero
+            inc bx  ; bx pro byte 10
+            inc bx
+            
+            mov matrizExp[bx], 0    ; Começa assumindo que é referencia
+
+            cmp byte ptr [si], '['  ; Se realmente for, vai pra prox word. Do contrário, acende a flag de que é uma const
+            je word6_exp
+
+            mov matrizExp[bx], 1
+            dec si                  ; Ajusta o ponteiro, pra estar no mesmo lugar pra word6_exp, mesmo se tivesse o colchete
+
+        word6_exp:
+            inc si  ; si deve estar apontando pro inicio do numero
+            inc bx  ; bx pro byte 12
+            inc bx
+            lea di, bufferMenor
+
+            cmp byte ptr [si], '-'  ; Tratamento para numeros negativos necessário pra verificação seguinte não falhar
+            jne loop_word6_exp
+
+            mov byte ptr [di], '-'
+            inc di
+            inc si                  ; Agora sim, se era neg, vai estar apontando pro primeiro digito
+
+            loop_word6_exp:
+                cmp byte ptr [si], '0'  
+                jl fim_loop_word6_exp
+                cmp byte ptr [si], '9'
+                jg fim_loop_word6_exp
+                
+                mov al, byte ptr [si]   
+                mov [di], al
+                inc di
+                inc si
+                jmp loop_word6_exp
+
+            fim_loop_word6_exp:
+                mov byte ptr [di], 0    ; Caractere terminador no final da string
+            
+            push bx                     ; Guarda o bx na pilha pra não perder o valor, já que atoi precisa que a string a ser convertida seja passada por bx
+            lea bx, bufferMenor
+            call atoi       
+            pop bx
+
+            mov matrizExp[bx], ax   ; ax sai da função atoi com o número convertido
+
+            cmp matrizExp[bx-2], 0  ; Tratamento pra si apontar pro mesmo lugar, mesmo que não haja colchete. Se tiver colchete, da certo sem alteracao
+            je prox_lin_cme            ; Se há colchete, pode continuar. Do contrário, decrementa 1 
+            dec si
+
+        prox_lin_cme:
+            inc bx  ; Ja incrementa o bx pra word 0 da segunda linha
+            inc bx
+            inc si  ; cr
+            inc si  ; lf
+            inc si  ; primeiro digito da linha de baixo
+            jmp loop_lin_cme
+
+    fim_cmatrix_exp:
+        ret
 
 cmatrix_exp endp
 
@@ -314,12 +511,12 @@ matrix_write proc near
     int 21h
     
     ; Quebra a linha pra escrever na parte de baixo
-    mov ah, 40h         ; int de escrita
-    mov bx, handleArq   
-    mov cx, 2          ; Número de bytes a serem escritos
-    lea dx, quebraLinha
-    int 21h
-    jc erro_escrita_mw
+    ;mov ah, 40h         ; int de escrita
+    ;mov bx, handleArq   
+    ;mov cx, 2          ; Número de bytes a serem escritos
+    ;lea dx, quebraLinha
+    ;int 21h
+    ;jc erro_escrita_mw
     
     lea di, bufferWrite
     mov cont, 0
