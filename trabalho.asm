@@ -34,13 +34,16 @@
 
     flagNeg db 0    ; Flag para a função atoi
     cont dw 0       ; Contador genérico
+
     numLinLew dw 1  ; Variável parâmetro para linha_exp_write
+    dLinDest dw ?    ; Variável pra deslocamento até linha de destino na função calculo
+    const dw ?      ; Variável pra número constante na função calculo
 
     stringTeste db  30 dup(?)    ; Variável usada em funções de teste
 
     numCol dw ? ; Número total de linhas e colunas da matriz 
     numLin dw ?
-    linIndex dw ?   ; Índices de linhas e colunas 
+    linIndex dw ?   ; Índices de linhas e colunas para uso em funções
     colIndex dw ?
 
     matriz dw 2000 dup(?)   ; Reserva 2000 espaços pra matriz que contem os dados
@@ -50,9 +53,10 @@
     .startup ; main
     
     call cmatrix
-    call cmatrix_exp
-    
-    call matrix_write
+    call cmatrix_exp   
+
+
+    call calculo
     
     ;mov si, 10
     ;mov ax, matriz[si]  
@@ -366,8 +370,9 @@ cmatrix_exp proc near
             inc bx  ; bx pro byte 8
             inc bx
             
-            mov ax, [si]        ; Simplesmente guarda a operação
-            mov matriz[bx], ax
+            mov al, byte ptr [si]        ; Simplesmente guarda a operação
+            mov ah, 0                    ; Como a matriz é de words tem que zerar a parte alta ao atribuir só o byte de baixo
+            mov matrizExp[bx], ax
 
         word5_exp:
             inc si  ; Deve estar apontando ou pra '[' ou pra um numero
@@ -495,60 +500,59 @@ matrix_write proc near
             inc linIndex
             jmp loop_lin_mw
 
-    inc si
-    mov [si], 0   ; Adiciona o caractere terminador ao fim do buffer
 
     ; A partir daqui a função deve localizar de onde a escrita no arquivo parou, escrever o buffer (matriz) logo após, e colocar o terminador (para futuras escritas)
-    ; Enquanto o arquivo não for fechado, a posição do cabeçote é salva pelo 
+    ; Enquanto o arquivo não for fechado, a posição do cabeçote é salva  
     escrita_result_mw:
+        mov [si], 0   ; Adiciona o caractere terminador ao fim do buffer
     
-    lea dx, arqResult    ; Abre o arquivo
-    mov al, 2            ; al = 2 para leitura e escrita
-    mov ah, 3dh
-    int 21h             ; cf == 0 se ok
-    jc erro_abrir_mw
-    mov handleArq, ax
+        lea dx, arqResult    ; Abre o arquivo
+        mov al, 2            ; al = 2 para leitura e escrita
+        mov ah, 3dh
+        int 21h             ; cf == 0 se ok
+        jc erro_abrir_mw
+         mov handleArq, ax
 
-    mov ah, 42h         ; int parecida com um "fseek"
-    mov al, 2           ; Aqui posiciona o cabeçote pro final do arquivo
-    mov bx, handleArq
-    mov cx, 0
-    mov dx, 0
-    int 21h
+        mov ah, 42h         ; int parecida com um "fseek"
+        mov al, 2           ; Aqui posiciona o cabeçote pro final do arquivo
+        mov bx, handleArq
+        mov cx, 0
+        mov dx, 0
+        int 21h
     
-    ; Quebra a linha pra escrever na parte de baixo
-    ;mov ah, 40h         ; int de escrita
-    ;mov bx, handleArq   
-    ;mov cx, 2          ; Número de bytes a serem escritos
-    ;lea dx, quebraLinha
-    ;int 21h
-    ;jc erro_escrita_mw
+        ; Quebra a linha pra escrever na parte de baixo
+        ;mov ah, 40h         ; int de escrita
+        ;mov bx, handleArq   
+        ;mov cx, 2          ; Número de bytes a serem escritos
+        ;lea dx, quebraLinha
+        ;int 21h
+        ;jc erro_escrita_mw
     
-    lea di, bufferWrite
-    mov cont, 0
-    loop_tam_buffer_mw:     ; Calcula o tamanho do buffer pra passar por parâmetro em cx na proxima escrita
+        lea di, bufferWrite
+        mov cont, 0
+        loop_tam_buffer_mw:     ; Calcula o tamanho do buffer pra passar por parâmetro em cx na proxima escrita
         
-        cmp byte ptr [di], 0
-        je fim_loop_tam_buffer_mw
+            cmp byte ptr [di], 0
+            je fim_loop_tam_buffer_mw
 
-        inc cont
-        inc di
-        jmp loop_tam_buffer_mw
+            inc cont
+            inc di
+            jmp loop_tam_buffer_mw
     
-    fim_loop_tam_buffer_mw:
+        fim_loop_tam_buffer_mw:
 
-    mov ah, 40h         ; Escreve o buffer no arquivo de resultados
-    mov bx, handleArq
-    mov cx, cont
-    lea dx, bufferWrite
-    int 21h
-    jc erro_escrita_mw
+            mov ah, 40h         ; Escreve o buffer no arquivo de resultados
+            mov bx, handleArq
+            mov cx, cont
+            lea dx, bufferWrite
+            int 21h
+            jc erro_escrita_mw
 
-    mov ah, 3eh         ; Fecha o arquivo
-    mov bx, handleArq
-    int 21h
+            mov ah, 3eh         ; Fecha o arquivo
+            mov bx, handleArq
+            int 21h
     
-    jmp fim_mw
+            jmp fim_mw
     
     
     erro_abrir_mw:
@@ -697,6 +701,254 @@ linha_exp_write proc near
     fim_linha_exp_write:
         ret
 linha_exp_write endp
+
+calculo proc near
+
+    mov bx, 0   ; bx vai percorrer a matriz de expressões word a word
+    mov numLinLew, 1    ; Número da linha dentro do arquivo de exp. Parâmentro para linha_exp_write. Começa em 1 
+
+    loop_calc:                  ; Execução pra cada linha de matrizExp
+        mov cont, 0 ; cont vai ser usado adiante
+        
+        cmp matrizExp[bx], '$' ; Procura o caractere termiandor, colocado na matriz em cmatrix_exp
+        je fim_calculo
+
+        ; Pra cada linha, 3 situações: [v1] ? [v2] / [v1] ? v2 / v1 ? [v2]
+        cmp matrizExp[bx+4], 1          ; Verifica se v1 é constante
+        je const_linha_calc             ; Se for, vai pra calculo considerando v1 ? [v2]. Do contrário, segue a verificação
+
+        cmp matrizExp[bx+10], 1         ; verifica se v2 é constante
+        je linha_const_calc             ; Se for, vai pra calculo considerando [v1] ? v2. Do contrario, só pode ser [v1] ? [v2]
+        
+        linha_linha_calc:   ; [v1] ? [v2]
+            ; si no modo indexado pra pegar o endereço do primeiro elemento da linha v1
+            ; di no modo indexado pra pegar o endereço do primeiro elemento da linha v2
+
+            mov ax, matrizExp[bx+6]     ; Calcula si de modo que matriz[si] -> matriz[(linIndex * numCol + colIndex) * 2 ] (v1)
+            mul numCol                  ; Tem o deslocamento do endereço original pro endereço com o elemento
+            mul const_dois
+            mov si, ax  
+
+            mov ax, matrizExp[bx+12]    ; O mesmo pra di (v2)
+            mul numCol
+            mul const_dois
+            mov di, ax
+
+            mov ax, matrizExp[bx+2]     ; Guarda o deslocamento para linha de destino em uma variável
+            mul numCol
+            mul const_dois
+            mov dLinDest, ax
+
+
+            ; Calculo da operação
+            loop_LL:
+                mov ax, numCol      ; Repete pra cada coluna, cont é incrementado no final
+                cmp ax, cont
+                je fim_loop_LL
+
+                mov ax, matriz[si]  ; Passa o elemento da vez da linha 1 pra ax
+                mov cx, matriz[di]  ; Passa o elemento da vez da linha 2 pra cx
+
+                call calc_op ; ax deve retornar com o resultado do elemento da vez
+
+                push bx         ; Armazena o elemento na posição apropriada na linha de destino. Guarda o bx pra não perder a word atual de matrizExp
+                mov bx, dLinDest
+                mov matriz[bx], ax
+                pop bx
+
+                inc si  ; Proximo elemento da matriz, tanto para quem acompanha v1(si), v2(di) e o destino (dLinDest)
+                inc si
+                inc di
+                inc di
+                inc dLinDest
+                inc dLinDest
+
+                inc cont
+                jmp loop_LL
+            
+            fim_loop_LL:
+                cmp matrizExp[bx], 1    ; Verifica flag de escrita para escrever no arquivo resultado
+                jne prox_lin_calc
+
+                push bx
+                call linha_exp_write
+                call matrix_write
+                pop bx
+
+                jmp prox_lin_calc
+
+        const_linha_calc:   ; v1 ? [v2]
+            
+            mov ax, matrizExp[bx+6]      ; Passa o valor direto da matriz de expressões para cx, já que é constante
+            mov const, ax               
+
+            mov ax, matrizExp[bx+12]   ; Deslocamento da matriz de dados até a linha v2 
+            mul numCol
+            mul const_dois
+            mov di, ax
+
+            mov ax, matrizExp[bx+2]     ; Guarda o deslocamento para linha de destino em dLinDest
+            mul numCol
+            mul const_dois
+            mov dLinDest, ax
+
+            loop_CL:
+                mov ax, numCol          ; Processo análogo ao em loop_LL
+                cmp ax, cont
+                je fim_loop_CL
+
+                mov ax, const
+                mov cx, matriz[di]
+
+                call calc_op
+
+                push bx
+                mov bx, dLinDest
+                mov matriz[bx], ax
+                pop bx
+
+                inc di  ; prox word da matriz
+                inc di
+                inc dLinDest    ; Prox elemento da linha de destino
+                inc dLinDest
+
+                inc cont
+                jmp loop_CL
+
+            fim_loop_CL:
+                cmp matrizExp[bx], 1    ; Verifica flag de escrita para escrever no arquivo resultado
+                jne prox_lin_calc
+
+                push bx
+                call linha_exp_write
+                call matrix_write
+                pop bx
+
+                jmp prox_lin_calc
+        
+        linha_const_calc:   ; [v1] ? v2
+
+            mov ax, matrizExp[bx+6]      
+            mul numCol
+            mul const_dois
+            mov si, ax
+
+            mov ax, matrizExp[bx+12]
+            mov const, ax
+
+            mov ax, matrizExp[bx+2]
+            mul numCol
+            mul const_dois
+            mov dLinDest, ax
+
+            loop_LC:
+                mov ax, numCol
+                cmp ax, cont
+                je fim_loop_LC
+
+                mov ax, matriz[si]
+                mov cx, const
+
+                call calc_op
+
+                push bx
+                mov bx, dLinDest
+                mov matriz[bx], ax
+                pop bx
+
+                inc si
+                inc si
+                inc dLinDest
+                inc dLinDest
+
+                inc cont
+                jmp loop_LC
+            
+            fim_loop_LC:
+                cmp matrizExp[bx], 1
+                jne prox_lin_calc
+
+                push bx
+                call linha_exp_write
+                call matrix_write
+                pop bx
+
+                jmp prox_lin_calc
+
+    prox_lin_calc:
+        add bx, 14 ; Prox linha da matriz de expressões
+        inc numLinLew
+        jmp loop_calc
+        
+    fim_calculo:
+        ret
+
+calculo endp
+
+calc_op proc near
+    ; Função pra ser chamada exclusivamente na função calculo
+    ; Faz a operação com base no que está armazenado na linha word4 da matrizExp
+    ; ax carrega o primeiro valor e cx o segundo. bx tem o deslocamento pro primeiro elemento da linha da matrizExp
+    
+    
+    cmp matrizExp[bx+8], '+'    ; Vê qual a operação deve ser feita
+    je soma_calc
+    cmp matrizExp[bx+8], '-'
+    je sub_calc
+    cmp matrizExp[bx+8], '*'
+    je mult_calc
+    cmp matrizExp[bx+8], '/'
+    je div_calc
+    cmp matrizExp[bx+8], '%'
+    je resto_calc
+    cmp matrizExp[bx+8], '&'
+    je and_calc
+    cmp matrizExp[bx+8], '|'
+    je or_calc
+    cmp matrizExp[bx+8], '^'
+    je xor_calc
+    
+    jmp fim_calc_op
+
+    soma_calc:
+        add ax, cx
+        jmp fim_calc_op
+    
+    sub_calc:
+        sub ax, cx
+        jmp fim_calc_op
+    
+    mult_calc:                  ; imul e idiv para operações com sinal
+        imul cx
+        jmp fim_calc_op
+
+    div_calc:
+        cwd
+        idiv cx
+        jmp fim_calc_op
+    
+    resto_calc:
+        cwd                     ; cwd (convert word to doubleword) necessário uma vez que o dividendo em em idiv é dx:ax. Ele converte ax em um numero de 32 bits pra dx:ax
+        idiv cx             
+        mov ax, dx              ; O resto é armazenado em dx na operação de divisão
+        jmp fim_calc_op
+    
+    and_calc:
+        and ax, cx
+        jmp fim_calc_op
+
+    or_calc:
+        or ax, cx
+        jmp fim_calc_op
+    
+    xor_calc:
+        xor ax, cx
+        jmp fim_calc_op
+
+    fim_calc_op:
+        ret
+
+calc_op endp
 
 atoi proc near
     ; Converte string em número 
