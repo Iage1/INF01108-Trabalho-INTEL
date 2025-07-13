@@ -10,11 +10,14 @@
     quebraLinha db CR, LF   ; Pra uso na escrita de arquivos
     const_dois dw 2 ; Constante dois pra uso em mul
 
-    msgErroAbrir db "Erro ao abrir arquivo",'$'  ; Mensagens (usando a int21/AH=09h)
+    msgErroAbrir db "Erro ao abrir arquivo",'$'  ; Mensagens de erro (usando a int21/AH=09h)
     msgErroLer db "Erro ao ler arquivo",'$'
     msgErroCol db "Erro nas colunas do arquivo",'$'
     msgErroEscrita db "Erro na escrita do arquivo",'$'
     msgErroOperacao db "Operacao invalida em EXP.TXT",'$'
+    msgErroCriar db "Erro ao criar o arquivo RESULT.TXT",'$'
+    msgErroDivZero db "ERRO: Divisao por zero",'$'
+    msgErroRefLinha db "Referencia a uma linha invalida em EXP.TXT",'$'
 
     arqDados db "DADOS.TXT",0   ; Variáveis para os arquivos
     arqExp db "EXP.TXT",0
@@ -52,18 +55,12 @@
 .code 
     .startup ; main
     
-    call cmatrix
-    call cmatrix_exp   
-
-
-    call calculo
+    call cresult        ; Cria o arquivo de resultados RESULT.TXT
     
-    ;mov si, 10
-    ;mov ax, matriz[si]  
-    ;call printf_numTeste
+    call cmatrix        ; Cria matriz de dados com base em DADOS.TXT
+    call cmatrix_exp    ; Cria matriz de expressões com base em EXP.TXT
 
-    
-    
+    call calculo        ; Realiza as operações com as matrizes e escreve os resultados no arquivo RESULT.TXT
 
     .exit  
 
@@ -723,7 +720,18 @@ calculo proc near
         linha_linha_calc:   ; [v1] ? [v2]
             ; si no modo indexado pra pegar o endereço do primeiro elemento da linha v1
             ; di no modo indexado pra pegar o endereço do primeiro elemento da linha v2
-
+            
+            mov ax, matrizExp[bx+6]           ; Checa se as referências são válidas (x em "[x]": Erro se x<0 ou x>=numLin)
+            cmp ax, 0
+            jl erro_ref_linha
+            cmp ax, numLin
+            jge erro_ref_linha
+            mov ax, matrizExp[bx+12]  
+            cmp ax, 0  
+            jl erro_ref_linha
+            cmp ax, numLin
+            jge erro_ref_linha        
+            
             mov ax, matrizExp[bx+6]     ; Calcula si de modo que matriz[si] -> matriz[(linIndex * numCol + colIndex) * 2 ] (v1)
             mul numCol                  ; Tem o deslocamento do endereço original pro endereço com o elemento
             mul const_dois
@@ -779,6 +787,13 @@ calculo proc near
 
         const_linha_calc:   ; v1 ? [v2]
             
+            mov ax, matrizExp[bx+12]
+            cmp ax, 0
+            jl erro_ref_linha
+            cmp ax, numLin
+            jge erro_ref_linha
+
+            
             mov ax, matrizExp[bx+6]      ; Passa o valor direto da matriz de expressões para cx, já que é constante
             mov const, ax               
 
@@ -828,6 +843,12 @@ calculo proc near
         
         linha_const_calc:   ; [v1] ? v2
 
+            mov ax, matrizExp[bx+6]
+            cmp ax, 0
+            jl erro_ref_linha
+            cmp ax, numLin
+            jge erro_ref_linha
+            
             mov ax, matrizExp[bx+6]      
             mul numCol
             mul const_dois
@@ -883,6 +904,15 @@ calculo proc near
     fim_calculo:
         ret
 
+    erro_ref_linha:
+        lea dx, msgErroRefLinha
+        mov ah, 09h
+        int 21h
+
+        mov al, 0      
+        mov ah, 4ch   
+        int 21h 
+
 calculo endp
 
 calc_op proc near
@@ -908,7 +938,13 @@ calc_op proc near
     cmp matrizExp[bx+8], '^'
     je xor_calc
     
-    jmp fim_calc_op
+    lea dx, msgErroOperacao  ; Se a operação no arquivo for diferente das possíveis, dá erro e encerra o programa
+    mov ah, 09h
+    int 21h
+
+    mov al, 0      
+    mov ah, 4ch   
+    int 21h 
 
     soma_calc:
         add ax, cx
@@ -923,15 +959,39 @@ calc_op proc near
         jmp fim_calc_op
 
     div_calc:
-        cwd
-        idiv cx
-        jmp fim_calc_op
+        cmp cx, 0               ; Checa possível divisão por zero para apontar erro e terminar o programa
+        jne continua_div_calc
+        
+        lea dx, msgErroDivZero  
+        mov ah, 09h
+        int 21h
+
+        mov al, 0      
+        mov ah, 4ch   
+        int 21h 
+
+        continua_div_calc:
+            cwd
+            idiv cx
+            jmp fim_calc_op
     
     resto_calc:
-        cwd                     ; cwd (convert word to doubleword) necessário uma vez que o dividendo em em idiv é dx:ax. Ele converte ax em um numero de 32 bits pra dx:ax
-        idiv cx             
-        mov ax, dx              ; O resto é armazenado em dx na operação de divisão
-        jmp fim_calc_op
+        cmp cx, 0               ; Checa possível divisão por zero para apontar erro e terminar o programa
+        jne continua_resto_calc
+        
+        lea dx, msgErroDivZero  
+        mov ah, 09h
+        int 21h
+
+        mov al, 0      
+        mov ah, 4ch   
+        int 21h 
+        
+        continua_resto_calc:
+            cwd                     ; cwd (convert word to doubleword) necessário uma vez que o dividendo em em idiv é dx:ax. Ele converte ax em um numero de 32 bits pra dx:ax
+            idiv cx             
+            mov ax, dx              ; O resto é armazenado em dx na operação de divisão
+            jmp fim_calc_op
     
     and_calc:
         and ax, cx
@@ -949,6 +1009,34 @@ calc_op proc near
         ret
 
 calc_op endp
+
+cresult proc near
+
+    mov ah, 3ch     ; Interrupção pra criar arquivo
+    mov cx, 0
+    lea dx, arqResult
+    int 21h         ; ax sai com o handle do arquivo
+    jc erro_criar
+
+    mov bx, ax      ; Fecha o arquivo logo após criá-lo
+    mov ah, 3eh
+    int 21h
+    jmp fim_cresult
+
+    erro_criar:
+        lea dx, msgErroCriar
+        mov ah, 09h
+        int 21h
+
+        mov al, 0      
+        mov ah, 4ch   
+        int 21h
+    
+    
+    fim_cresult:
+        ret
+
+cresult endp
 
 atoi proc near
     ; Converte string em número 
